@@ -1,0 +1,26 @@
+# ── web / transport ──────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+websockets>=13.0
+aiohttp>=3.10.0
+httpx>=0.27.0
+python-dotenv>=1.0.1
+pydantic>=2.8.0
+
+# ── logging ──────────────────────────────────────────────────────────────────
+loguru>=0.7.2
+
+# ── audio + VAD ──────────────────────────────────────────────────────────────
+numpy>=1.26.0,<2.3
+silero-vad>=5.1
+onnxruntime>=1.18.0
+torch>=2.2.0          # silero-vad needs the tensor API even in onnx mode
+
+# ── telephony ────────────────────────────────────────────────────────────────
+# Official Twilio library: webhook signatures, Voice SDK access tokens, TwiML
+twilio==9.12.0
+# FastAPI needs it to read Twilio's form-encoded webhooks
+python-multipart==0.0.32
+
+# ── tests (not needed in production) ─────────────────────────────────────────
+# pip install -r requirements-dev.txt

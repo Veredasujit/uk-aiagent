@@ -1,0 +1,19 @@
+# Vedronix UK voice agent on the VPS. Compose project and container `vedronix-uk-agent`.
+# One container, one worker: the busy-line limit and live transcripts are kept in memory.
+name: vedronix-uk-agent
+
+services:
+  agent:
+    build: .
+    container_name: vedronix-uk-agent
+    restart: unless-stopped
+    env_file: ./.env.production
+    environment:
+      DATA_DIR: /app/data
+      LOG_DIR: /app/logs
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    ports:
+      - "127.0.0.1:8823:8823"
+    logging: { driver: json-file, options: { max-size: "20m", max-file: "5" } }
