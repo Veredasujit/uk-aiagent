@@ -498,11 +498,11 @@ async def health() -> dict:
             "whatsapp": {"enabled": config.WHATSAPP_ENABLED, **(await store.run(store.wa_counts))},
             "service": "vedronix-uk-agent", "host": config.PUBLIC_HOST}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app.server:app",
-        host="0.0.0.0",
-        port=8823,
-        workers=1
-    )
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(
+#         "app.server:app",
+#         host="0.0.0.0",
+#         port=8823,
+#         workers=1
+#     )
