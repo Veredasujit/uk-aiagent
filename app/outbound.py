@@ -1,7 +1,8 @@
 """
 outbound.py — the outbound call API (owner's request, 2026-11-20; UK conversion 2026-11-21).
+Dev-bypass additions: OUTBOUND_DEV_NO_AUTH / OUTBOUND_ALLOW_NON_UK / OUTBOUND_DEFAULT_TZ.
 
-The office's own systems ask the agent to ring a UK patient (appointment reminder, recall,
+The office's own systems ask the agent to ring a patient (appointment reminder, recall,
 reschedule, call-back...). The agent places the call from our Twilio number; when the
 person answers, the very same pipeline as an inbound call talks to them, with a prompt
 that knows why it called.
@@ -19,20 +20,6 @@ that knows why it called.
 Auth: `Authorization: Bearer vdx_live_…` (or `X-API-Key`). Only sha256 hashes of the keys
 live on the server (OUTBOUND_API_KEYS="name:hash,…"); every key sees only its own calls.
 Make a key with:  python -m app.outbound new <name>
-
-Many requests at once: every call is a row in SQLite (store.outbound_calls), so a burst of
-requests or a restart never loses one. One dispatcher loop dials what's due, at most
-OUTBOUND_MAX_CONCURRENT at a time and always leaving OUTBOUND_INBOUND_RESERVE lines for
-people calling in. Busy / no answer / Twilio hiccups are retried with a delay, up to
-max_attempts, never outside the calling window. Checks and inserts run under one lock, so
-two simultaneous requests can't both ring the same number.
-
-Compliance built in (UK, AI voice): the caller must attest consent (UK GDPR / PECR);
-calls only 8 am-8 pm in the callee's local time (Europe/London); UK numbers only, no
-premium (09) or personal-numbering (070) ranges; a do-not-call list that also fills itself
-when someone says "stop calling me"; at most OUTBOUND_PER_NUMBER_PER_DAY calls to one
-number; the agent says it is an AI assistant in its first sentence and shares no details
-until it knows it's speaking with the right person.
 """
 from __future__ import annotations
 
@@ -88,22 +75,6 @@ _OPT_OUT = re.compile(r"\b(stop calling|do ?n[o']t call (me|us|this number)|do n
 _UK_TZ = "Europe/London"
 
 # UK: Ofcom drama/reserved numbers that are never routed to a real person.
-#   020 7946 0xxx      London drama
-#   0113 496 0xxx      Leeds drama
-#   0114 496 0xxx      Sheffield drama
-#   0115 496 0xxx      Nottingham drama
-#   0116 496 0xxx      Leicester drama
-#   0117 496 0xxx      Bristol drama
-#   0118 496 0xxx      Reading drama
-#   0121 496 0xxx      Birmingham drama
-#   0131 496 0xxx      Edinburgh drama
-#   0141 496 0xxx      Glasgow drama
-#   0151 496 0xxx      Liverpool drama
-#   0161 496 0xxx      Manchester drama
-#   0191 498 0xxx      Tyneside drama
-#   028 9649 6xxx      Northern Ireland drama
-#   029 2018 0xxx      Cardiff drama
-#   07 7009 00xxx      Mobile drama (Ofcom reserved)
 _UK_DRAMA = re.compile(
     r"^(?:"
     r"20(?:7946|7947|7948)0\d{3}|"
@@ -175,6 +146,8 @@ def _keys() -> dict[str, str]:
 
 
 def authenticate(request: Request) -> str:
+    if config.OUTBOUND_DEV_NO_AUTH:
+        return "dev"                      # every dev call lands under key name "dev"
     raw = request.headers.get("authorization", "")
     key = raw[7:].strip() if raw.lower().startswith("bearer ") else request.headers.get("x-api-key", "").strip()
     if not key:
@@ -206,23 +179,28 @@ def _rate_limit(key: str) -> None:
 
 
 # ── phone numbers, time zones and the calling window ─────────────────────────
-def normalize_uk(raw: Any, field: str = "to") -> str:
-    """'+44 7700 900123', '07700 900123', '447700900123' → '+447700900123', or ApiError.
-
-    UK rules:
-      * Accepts +44…, 0044…, or national 0… formats.
-      * Rejects premium (09), personal numbering (070), and Ofcom fictional/drama ranges.
-      * Rejects UK service numbers 084/087 (business-rate) — these are allowed only with
-        explicit consent per PECR; we take the conservative route and block them.
-    """
+def normalize_number(raw: Any, field: str = "to") -> str:
+    """UK numbers (default) or any E.164 number when OUTBOUND_ALLOW_NON_UK (dev only)."""
     if not isinstance(raw, str) or not raw.strip():
-        raise ApiError(422, "invalid_number", "A UK phone number is required.", field)
+        raise ApiError(422, "invalid_number", "A phone number is required.", field)
     s = raw.strip()
     if re.search(r"[A-Za-z]", s) or len(s) > 30:
         raise ApiError(422, "invalid_number", "Phone numbers may only contain digits, spaces, +, -, ( ) and dots.", field)
     d = re.sub(r"\D", "", s)
 
-    # Normalise to "44…" form
+    # ── non-UK dev bypass: accept any E.164 ──────────────────────────────────
+    if config.OUTBOUND_ALLOW_NON_UK:
+        if s.startswith("+"):
+            if not (8 <= len(d) <= 15):
+                raise ApiError(422, "invalid_number", "That isn't a valid E.164 phone number.", field)
+            return "+" + d
+        if s.startswith("00"):
+            if not (8 <= len(d) - 2 <= 15):
+                raise ApiError(422, "invalid_number", "That isn't a valid E.164 phone number.", field)
+            return "+" + d[2:]
+        # fall through to UK logic for national 0… forms so +44 dev tests still work
+
+    # ── UK normalisation (default, unchanged) ────────────────────────────────
     if s.startswith("+"):
         if not d.startswith("44"):
             raise ApiError(422, "unsupported_country", "Only UK numbers (+44) can be called.", field)
@@ -246,17 +224,7 @@ def normalize_uk(raw: Any, field: str = "to") -> str:
     if national.startswith("70"):
         raise ApiError(422, "unsupported_number", "Personal-numbering (070) ranges can't be called.", field)
     if national.startswith("84") or national.startswith("87"):
-        # 084x/087x business-rate / revenue-share — PECR treats these as marketing-sensitive
         raise ApiError(422, "unsupported_number", "Business-rate (084/087) numbers can't be called.", field)
-    if national.startswith("76") or national.startswith("77") or national.startswith("78") or national.startswith("79"):
-        pass  # mobile — allowed
-    if national.startswith(("1", "2", "3", "8")):
-        pass  # geographic, non-geographic, freephone (080/0808) — allowed
-
-    if _UK_DRAMA.match(national):
-        # Ofcom drama ranges are never routed to a real person; allow them explicitly
-        # because they are the standard test numbers used by developers.
-        pass
 
     e164 = f"+44{national}"
     if e164 == re.sub(r"[^\d+]", "", config.TWILIO_PHONE_NUMBER):
@@ -269,7 +237,7 @@ def _valid_tz(name: Any) -> str:
         return ""
     if not isinstance(name, str):
         raise ApiError(422, "invalid_field", "timezone must be an IANA name like 'Europe/London'.", "timezone")
-    if not (name.startswith("Europe/") or name == "GB"):
+    if not config.OUTBOUND_ALLOW_NON_UK and not (name.startswith("Europe/") or name == "GB"):
         raise ApiError(422, "invalid_field", "timezone must be a UK time zone (e.g. 'Europe/London').", "timezone")
     try:
         ZoneInfo(name)
@@ -279,8 +247,11 @@ def _valid_tz(name: Any) -> str:
 
 
 def zones_for(number: str, tz_name: str = "") -> list[str]:
-    # Every UK number is in Europe/London local time.
-    return [tz_name or _UK_TZ]
+    if tz_name:
+        return [tz_name]
+    if config.OUTBOUND_ALLOW_NON_UK and not number.startswith("+44"):
+        return [config.OUTBOUND_DEFAULT_TZ]
+    return [_UK_TZ]
 
 
 def in_window(ts: float, zones: list[str]) -> bool:
@@ -354,6 +325,8 @@ def _text(body: dict, field: str, limit: int) -> str:
 
 def check_callback_url(url: str) -> None:
     """At request time: https, a real host name or a public IP. DNS is checked again at send time."""
+    if config.OUTBOUND_ALLOW_NON_UK:
+        return  # dev only: localhost webhooks are fine
     try:
         u = urlparse(url)
     except ValueError:
@@ -375,13 +348,15 @@ def validate(body: Any, now: Optional[float] = None) -> dict:
     now = now or time.time()
     if not isinstance(body, dict):
         raise ApiError(422, "invalid_body", "Each call must be a JSON object.")
+    if config.OUTBOUND_DEV_NO_AUTH:
+        body = {k: v for k, v in body.items() if k != "idempotency_key"}
     unknown = sorted(set(body) - FIELDS)
     if unknown:
         raise ApiError(422, "unknown_field", f"Unknown field '{unknown[0]}'.", unknown[0])
-    to = normalize_uk(body.get("to"))
+    to = normalize_number(body.get("to"))
     if body.get("consent") is not True:
         raise ApiError(422, "consent_required", "Set consent: true to confirm this person agreed to be called by the "
-                                                "office's AI assistant (UK PECR / UK GDPR consent).", "consent")
+                                                "office's AI assistant.", "consent")
     purpose = body.get("purpose")
     if purpose not in PURPOSES:
         raise ApiError(422, "invalid_field", f"purpose must be one of: {', '.join(PURPOSES)}.", "purpose")
@@ -470,7 +445,6 @@ def add_dnc(number: str, reason: str, source: str) -> bool:
     with store._lock:
         cur = store._db().execute("INSERT OR IGNORE INTO dnc (number, reason, source, added_at) VALUES (?,?,?,?)",
                                   (number, reason[:200], source[:40], time.time()))
-        # anything still waiting for that number is called off
         store._db().execute("UPDATE outbound_calls SET status='canceled', last_error='do_not_call', updated_at=?, "
                             "completed_at=? WHERE to_number=? AND status='queued'", (time.time(), time.time(), number))
         store._db().commit()
@@ -622,13 +596,11 @@ def on_voice(job_id: str, p: dict) -> tuple[str, Optional[dict]]:
 
 def voicemail_text(job: dict) -> str:
     from .notify import office_phone
-
     return (f"Hi, this is {config.AGENT_NAME}, an AI assistant calling from {config.BUSINESS_NAME}. "
             f"Please give us a call back at {_spoken_phone(office_phone())} when you have a moment. Thank you, and have a great day!")
 
 
 def _spoken_phone(p: str) -> str:
-    # UK: read out as "oh two oh, seven nine four six, oh nine five eight"
     d = re.sub(r"\D", "", p)
     if d.startswith("44"):
         d = "0" + d[2:]
@@ -640,7 +612,7 @@ def _spoken_phone(p: str) -> str:
 def on_status(job_id: str, p: dict) -> None:
     job = _get(job_id)
     if job is None or job.get("call_sid") != p.get("CallSid") or job.get("finalized"):
-        return  # an old attempt's late callback, or already done
+        return
     st = (p.get("CallStatus") or "").lower()
     now = time.time()
     if st == "ringing" and job["status"] == "dialing":
@@ -650,7 +622,6 @@ def on_status(job_id: str, p: dict) -> None:
     elif st == "completed":
         dur = float(p.get("CallDuration") or 0)
         if job.get("answered_at") and job["status"] in ("in_progress", "canceled"):
-            # a conversation: the session's report (summary, transcript) finishes it, or the sweeper
             _update(job_id, twilio_status=st, ended_at=now, duration_s=dur)
         elif job["status"] == "canceled":
             _final(job, "canceled", job.get("last_error") or "canceled", duration_s=dur)
@@ -680,7 +651,8 @@ def on_report(call_sid: str, report: dict) -> None:
     if _OPT_OUT.search(said):
         add_dnc(job["to_number"], "asked not to be called again (during the call)", "spoken_opt_out")
         info("outbound", f"{job['id']}: callee asked not to be called again → do-not-call")
-    _final(job, "canceled" if job["status"] == "canceled" else "completed", "", outcome=report.get("outcome"), summary=report.get("summary"),
+    _final(job, "canceled" if job["status"] == "canceled" else "completed", "", outcome=report.get("outcome"),
+           summary=report.get("summary"),
            transcript=json.dumps(report.get("transcript") or [], ensure_ascii=False),
            lead=json.dumps(report["lead"], ensure_ascii=False) if report.get("lead") else None,
            duration_s=report.get("seconds") or job.get("duration_s"), ended_at=time.time())
@@ -694,16 +666,14 @@ def _counts() -> dict:
 
 
 def capacity() -> int:
-    """How many more outbound calls may start now."""
     c = _counts()
     active = sum(c.get(s, 0) for s in ACTIVE)
-    ringing = c.get("dialing", 0) + c.get("ringing", 0)   # not in LIVE yet, but will be
+    ringing = c.get("dialing", 0) + c.get("ringing", 0)
     lines = config.MAX_CONCURRENT_CALLS - config.OUTBOUND_INBOUND_RESERVE - _live_count() - ringing
     return max(0, min(config.OUTBOUND_MAX_CONCURRENT - active, lines))
 
 
 def _claim(limit: int, now: float) -> list[dict]:
-    """Take up to `limit` due calls and mark them dialing (attempts + 1) in one step."""
     if limit <= 0:
         return []
     with store._lock:
@@ -714,7 +684,7 @@ def _claim(limit: int, now: float) -> list[dict]:
         for r in rows:
             r = dict(r)
             if r["expires_at"] <= now:
-                continue  # the sweeper expires it
+                continue
             zones = zones_for(r["to_number"], r.get("timezone") or "")
             if not in_window(now, zones):
                 db.execute("UPDATE outbound_calls SET next_at=?, updated_at=? WHERE id=?",
@@ -753,13 +723,11 @@ async def _dial(job: dict) -> None:
         return
     sids = json.loads(job.get("call_sids") or "[]") + [sid]
     await store.run(lambda: _update(job["id"], call_sid=sid, call_sids=json.dumps(sids), twilio_status="queued"))
-    # canceled while the REST call was in flight: hang the new call up straight away
     if (await store.run(_get, job["id"]) or {}).get("status") == "canceled":
         await twilio_api.hangup(sid, "canceled")
 
 
 def sweep(now: Optional[float] = None) -> None:
-    """Calls stuck because a Twilio callback never came (or we restarted mid-call)."""
     now = now or time.time()
     with store._lock:
         rows = [dict(r) for r in store._db().execute(
@@ -771,11 +739,11 @@ def sweep(now: Optional[float] = None) -> None:
         if j["status"] == "queued":
             _final(j, "expired", j.get("last_error") or "expired: not reached before expires_at")
         elif j["status"] == "canceled" and age > ring_s:
-            _final(j, "canceled", j.get("last_error") or "canceled")         # Twilio's final callback never came
+            _final(j, "canceled", j.get("last_error") or "canceled")
         elif j["status"] in ("dialing", "ringing") and age > ring_s:
             _retry_or_final(j, "failed", "no_callback: Twilio never reported the call's progress")
         elif j["status"] == "in_progress" and j.get("ended_at") and now - j["ended_at"] > 90:
-            _final(j, "completed", "")                       # the report never came
+            _final(j, "completed", "")
         elif j["status"] == "in_progress" and not j.get("ended_at") and j.get("answered_at") \
                 and now - j["answered_at"] > config.MAX_CALL_SECONDS + 300:
             _final(j, "completed", "lost_track: no end-of-call status")
@@ -819,6 +787,8 @@ def sign_webhook(body: str, ts: int) -> str:
 
 
 async def _public_host(url: str) -> bool:
+    if config.OUTBOUND_ALLOW_NON_UK:
+        return True  # dev only: allow localhost / private webhooks
     u = urlparse(url)
     try:
         infos = await asyncio.get_running_loop().getaddrinfo(u.hostname, u.port or 443, type=socket.SOCK_STREAM)
@@ -978,7 +948,6 @@ async def list_calls(request: Request, status: str = "", limit: int = 50, cursor
         return error_response(exc, rid)
 
 
-
 async def _own(key: str, call_id: str) -> dict:
     job = await store.run(_get, call_id) if re.fullmatch(r"call_[0-9a-f]{24}", call_id) else None
     if job is None or job["api_key"] != key:
@@ -1007,7 +976,6 @@ async def cancel_call(request: Request, call_id: str) -> JSONResponse:
         if job["status"] == "queued":
             await store.run(_final, job, "canceled", "canceled: canceled by the API")
         else:
-            # dialing / ringing / talking: hang up; Twilio's final status callback finishes it
             await store.run(lambda: _update(job["id"], status="canceled", last_error="canceled: canceled by the API"))
             if job.get("call_sid"):
                 await twilio_api.hangup(job["call_sid"], "canceled by API")
@@ -1021,7 +989,7 @@ async def dnc_get(request: Request, number: str) -> JSONResponse:
     rid = "req_" + secrets.token_hex(8)
     try:
         await _guard(request)
-        n = normalize_uk(number, "number")
+        n = normalize_number(number, "number")
         return _ok({"number": n, "do_not_call": await store.run(is_dnc, n)}, 200, rid)
     except ApiError as exc:
         return error_response(exc, rid)
@@ -1035,7 +1003,7 @@ async def dnc_add(request: Request) -> JSONResponse:
         body = await _json(request, 8 * 1024)
         if not isinstance(body, dict):
             raise ApiError(422, "invalid_body", "Send {\"number\": \"...\", \"reason\": \"...\"}.")
-        n = normalize_uk(body.get("number"), "number")
+        n = normalize_number(body.get("number"), "number")
         added = await store.run(add_dnc, n, _text(body, "reason", 200) or "requested", f"api:{key}")
         return _ok({"number": n, "do_not_call": True, "added": added}, 201 if added else 200, rid)
     except ApiError as exc:
@@ -1047,7 +1015,7 @@ async def dnc_remove(request: Request, number: str) -> JSONResponse:
     rid = "req_" + secrets.token_hex(8)
     try:
         await _guard(request)
-        n = normalize_uk(number, "number")
+        n = normalize_number(number, "number")
         if not await store.run(remove_dnc, n):
             raise ApiError(404, "not_found", "That number isn't on the do-not-call list.")
         return _ok({"number": n, "do_not_call": False}, 200, rid)

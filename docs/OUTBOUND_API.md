@@ -175,3 +175,18 @@ python -m app.outbound secret       # prints an OUTBOUND_WEBHOOK_SECRET
 
 Only the hash is stored on the server. To revoke a key, remove its `name:hash` entry and
 restart the server.
+
+
+
+
+curl -X POST http://localhost:8823/v1/calls \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "+917318079820",
+    "consent": true,
+    "consent_source": "test — internal QA only",
+    "purpose": "custom",
+    "context": "QA test call for the outbound dispatcher — say hello and hang up.",
+    "timezone": "Asia/Kolkata",
+    "metadata": {"test": true}
+  }'

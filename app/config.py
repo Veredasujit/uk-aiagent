@@ -87,7 +87,7 @@ LOG_JSONL = _b("LOG_JSONL", True)
 # ─────────────────────────── service ────────────────────────────────────────
 # Where Twilio and browsers reach us. Every webhook URL is built from this, and Twilio's
 # request signature is checked against exactly that URL.
-PUBLIC_HOST = _s("PUBLIC_HOST", "cataract-unleveled-confess.ngrok-free.dev")
+PUBLIC_HOST = _s("PUBLIC_HOST", "uk-agent.vedronix.com")
 AGENT_NAME = _s("AGENT_NAME", "Amelia")
 BUSINESS_NAME = _s("BUSINESS_NAME", "Brightside Dental")
 OFFICE_TIMEZONE = _s("OFFICE_TIMEZONE", "Europe/London")
@@ -125,6 +125,10 @@ ADMIN_API_KEY = _s("ADMIN_API_KEY")
 OUTBOUND_TEST_NUMBERS = _list("OUTBOUND_TEST_NUMBERS", "")
 OUTBOUND_TEST_PER_HOUR = _i("OUTBOUND_TEST_PER_HOUR", 6)
 
+
+OUTBOUND_DEV_NO_AUTH  = _list("OUTBOUND_DEV_NO_AUTH", False)   # dev only: skip API key auth
+OUTBOUND_ALLOW_NON_UK = _list("OUTBOUND_ALLOW_NON_UK", False)  # dev only: accept +91/+1/etc.
+OUTBOUND_DEFAULT_TZ   = os.getenv("OUTBOUND_DEFAULT_TZ", "Europe/London")
 # Outbound call API (owner's request, 2026-11-20): POST /v1/calls rings US patients for the
 # office (reminders, recalls, call-backs). Keys are stored only as sha256 hashes:
 #   OUTBOUND_API_KEYS=name:sha256hex,name2:sha256hex      (python -m app.outbound_keys new NAME)
