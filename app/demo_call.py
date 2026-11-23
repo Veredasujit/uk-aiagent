@@ -1,8 +1,8 @@
 """
-demo_call.py — "Get a call from Ava" on vedronix.com (owner's request, 2026-11-20).
+demo_call.py — "Get a call from Amelia" on vedronix.com (owner's request, 2026-11-20).
 
 A visitor types their US number; we text them a 6-digit code (Twilio Verify) and only when
-they type it back does Ava call them. The code proves they hold that phone and asked for
+they type it back does Amelia call them. The code proves they hold that phone and asked for
 the call, so nobody can point the AI at someone else's number.
 
   POST /web/call-me/start    {to, name?, consent: true}   → code texted     (origin-checked)
