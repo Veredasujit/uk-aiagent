@@ -126,9 +126,9 @@ OUTBOUND_TEST_NUMBERS = _list("OUTBOUND_TEST_NUMBERS", "")
 OUTBOUND_TEST_PER_HOUR = _i("OUTBOUND_TEST_PER_HOUR", 6)
 
 
-OUTBOUND_DEV_NO_AUTH  = _list("OUTBOUND_DEV_NO_AUTH", False)   # dev only: skip API key auth
-OUTBOUND_ALLOW_NON_UK = _list("OUTBOUND_ALLOW_NON_UK", False)  # dev only: accept +91/+1/etc.
-OUTBOUND_DEFAULT_TZ   = os.getenv("OUTBOUND_DEFAULT_TZ", "Europe/London")
+OUTBOUND_DEV_NO_AUTH  = _b("OUTBOUND_DEV_NO_AUTH", False)   # dev only: skip API key auth
+OUTBOUND_ALLOW_NON_UK = _b("OUTBOUND_ALLOW_NON_UK", False)  # dev only: accept +91/+1/etc.
+OUTBOUND_DEFAULT_TZ   = _s("OUTBOUND_DEFAULT_TZ", "Europe/London")
 # Outbound call API (owner's request, 2026-11-20): POST /v1/calls rings US patients for the
 # office (reminders, recalls, call-backs). Keys are stored only as sha256 hashes:
 #   OUTBOUND_API_KEYS=name:sha256hex,name2:sha256hex      (python -m app.outbound_keys new NAME)
@@ -377,6 +377,8 @@ MACHINE_DETECT_WINDOW_S = _f("MACHINE_DETECT_WINDOW_S", 20.0)
 # Model used for the post-call analysis (structured JSON, not latency bound).
 ANALYSIS_MODEL = _s("ANALYSIS_MODEL", "") or None
 
+if os.getenv("ENV", "").lower() == "production" and (OUTBOUND_DEV_NO_AUTH or OUTBOUND_ALLOW_NON_UK):
+    raise SystemExit("OUTBOUND_DEV_NO_AUTH / OUTBOUND_ALLOW_NON_UK must be off in production")
 
 def missing_required() -> list[str]:
     need = [("OPENAI_API_KEY", OPENAI_API_KEY), ("DEEPGRAM_API_KEY", DEEPGRAM_API_KEY), ("APP_SECRET", APP_SECRET),
