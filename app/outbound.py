@@ -1,6 +1,5 @@
 """
 outbound.py — the outbound call API (owner's request, 2026-11-20; UK conversion 2026-11-21).
-Dev-bypass additions: OUTBOUND_DEV_NO_AUTH / OUTBOUND_ALLOW_NON_UK / OUTBOUND_DEFAULT_TZ.
 
 The office's own systems ask the agent to ring a patient (appointment reminder, recall,
 reschedule, call-back...). The agent places the call from our Twilio number; when the
@@ -17,9 +16,7 @@ that knows why it called.
   DELETE /v1/dnc/{number}        remove one (only when the person has given consent again)
   GET    /v1/me                  which key this is, its limits and today's usage
 
-Auth: `Authorization: Bearer vdx_live_…` (or `X-API-Key`). Only sha256 hashes of the keys
-live on the server (OUTBOUND_API_KEYS="name:hash,…"); every key sees only its own calls.
-Make a key with:  python -m app.outbound new <name>
+Auth: disabled in this build — every request is treated as the "dev" key.
 """
 from __future__ import annotations
 
@@ -146,21 +143,8 @@ def _keys() -> dict[str, str]:
 
 
 def authenticate(request: Request) -> str:
-    if config.OUTBOUND_DEV_NO_AUTH:
-        return "dev"                      # every dev call lands under key name "dev"
-    raw = request.headers.get("authorization", "")
-    key = raw[7:].strip() if raw.lower().startswith("bearer ") else request.headers.get("x-api-key", "").strip()
-    if not key:
-        raise ApiError(401, "unauthorized", "Missing API key. Send 'Authorization: Bearer <key>'.",
-                       headers={"WWW-Authenticate": "Bearer"})
-    keys = _keys()
-    if not keys:
-        raise ApiError(503, "not_configured", "The outbound call API has no keys configured.")
-    h = hash_key(key)
-    for known, name in keys.items():
-        if hmac.compare_digest(known, h):
-            return name
-    raise ApiError(401, "unauthorized", "Invalid API key.", headers={"WWW-Authenticate": "Bearer"})
+    """No API-key check. Every call is stored under the key name "dev"."""
+    return "dev"
 
 
 _REQS: dict[str, deque] = defaultdict(deque)
@@ -348,8 +332,6 @@ def validate(body: Any, now: Optional[float] = None) -> dict:
     now = now or time.time()
     if not isinstance(body, dict):
         raise ApiError(422, "invalid_body", "Each call must be a JSON object.")
-    if config.OUTBOUND_DEV_NO_AUTH:
-        body = {k: v for k, v in body.items() if k != "idempotency_key"}
     unknown = sorted(set(body) - FIELDS)
     if unknown:
         raise ApiError(422, "unknown_field", f"Unknown field '{unknown[0]}'.", unknown[0])

@@ -179,7 +179,7 @@ restart the server.
 
 
 
-curl -X POST http://localhost:8823/v1/calls \
+curl -X POST https://uk-agent.vedronix.com/v1/calls \
   -H "Content-Type: application/json" \
   -d '{
     "to": "+917318079820",

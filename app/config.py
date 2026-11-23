@@ -126,8 +126,7 @@ OUTBOUND_TEST_NUMBERS = _list("OUTBOUND_TEST_NUMBERS", "")
 OUTBOUND_TEST_PER_HOUR = _i("OUTBOUND_TEST_PER_HOUR", 6)
 
 
-OUTBOUND_DEV_NO_AUTH  = _b("OUTBOUND_DEV_NO_AUTH", False)   # dev only: skip API key auth
-OUTBOUND_ALLOW_NON_UK = _b("OUTBOUND_ALLOW_NON_UK", False)  # dev only: accept +91/+1/etc.
+OUTBOUND_ALLOW_NON_UK = _b("OUTBOUND_ALLOW_NON_UK", False)   # must use _b, not _list
 OUTBOUND_DEFAULT_TZ   = _s("OUTBOUND_DEFAULT_TZ", "Europe/London")
 # Outbound call API (owner's request, 2026-11-20): POST /v1/calls rings US patients for the
 # office (reminders, recalls, call-backs). Keys are stored only as sha256 hashes:
